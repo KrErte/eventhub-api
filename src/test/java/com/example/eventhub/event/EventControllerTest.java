@@ -64,6 +64,66 @@ class EventControllerTest {
     }
 
     @Test
+    void createsEvent() {
+        var result = assertThat(mvc.post().uri("/api/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title": "  Uus meetup  ",
+                                  "description": "",
+                                  "startsAt": "2099-05-01T15:00:00Z",
+                                  "venue": "Tallinn",
+                                  "capacity": 40
+                                }
+                                """))
+                .hasStatus(HttpStatus.CREATED);
+        result.headers().hasHeaderSatisfying("Location",
+                values -> assertThat(values.getFirst()).matches(".*/api/events/[0-9a-f-]{36}"));
+        var body = result.bodyJson();
+        body.extractingPath("$.title").isEqualTo("Uus meetup");
+        body.extractingPath("$.description").isNull();
+        body.extractingPath("$.startsAt").isEqualTo("2099-05-01T15:00:00Z");
+        body.extractingPath("$.capacity").isEqualTo(40);
+
+        assertThat(repository.findAll()).singleElement()
+                .satisfies(event -> assertThat(event.getTitle()).isEqualTo("Uus meetup"));
+    }
+
+    @Test
+    void rejectsInvalidEventWithFieldErrors() {
+        var body = assertThat(mvc.post().uri("/api/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title": " ",
+                                  "startsAt": "2000-01-01T10:00:00Z",
+                                  "venue": "",
+                                  "capacity": 0
+                                }
+                                """))
+                .hasStatus(HttpStatus.BAD_REQUEST)
+                .hasContentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .bodyJson();
+        body.extractingPath("$.errors.title").isEqualTo("Pealkiri on kohustuslik");
+        body.extractingPath("$.errors.startsAt").isEqualTo("Algusaeg peab olema tulevikus");
+        body.extractingPath("$.errors.venue").isEqualTo("Toimumiskoht on kohustuslik");
+        body.extractingPath("$.errors.capacity").isEqualTo("Kohtade arv peab olema vähemalt 1");
+
+        assertThat(repository.count()).isZero();
+    }
+
+    @Test
+    void rejectsMissingRequiredFields() {
+        var body = assertThat(mvc.post().uri("/api/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .hasStatus(HttpStatus.BAD_REQUEST)
+                .bodyJson();
+        body.extractingPath("$.errors.startsAt").isEqualTo("Algusaeg on kohustuslik");
+        body.extractingPath("$.errors.capacity").isEqualTo("Kohtade arv on kohustuslik");
+    }
+
+    @Test
     void malformedIdIsBadRequestProblem() {
         assertThat(mvc.get().uri("/api/events/not-a-uuid"))
                 .hasStatus(HttpStatus.BAD_REQUEST)

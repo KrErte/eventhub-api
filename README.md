@@ -4,8 +4,8 @@ EventHub on sündmuste haldamise rakendus: sündmuste nimekiri, hiljem ka sündm
 See repo sisaldab **backendi** (REST API). Kasutajaliides on eraldi repos:
 [Eventhub-frontend](https://github.com/KrErte/Eventhub-frontend).
 
-**Praegune seis:** API oskab sündmusi lugeda (`GET /api/events`, `GET /api/events/{id}`).
-Loomine, broneerimine ja autentimine on veel tegemata.
+**Praegune seis:** API oskab sündmusi lugeda (`GET /api/events`, `GET /api/events/{id}`) ja luua
+(`POST /api/events`). Broneerimine ja autentimine on veel tegemata.
 
 ## Sisukord
 
@@ -87,6 +87,7 @@ com.example.eventhub
     ├── EventRepository         ← Spring Data repo  (package-private)
     ├── EventService            ← feature'i avalik sisenemispunkt
     ├── EventResponse           ← DTO (record), mida API tagastab
+    ├── CreateEventRequest      ← DTO (record), loomise päringu keha + valideerimine
     └── EventController         ← REST endpointid
 ```
 
@@ -179,6 +180,42 @@ GET /api/events
 | `400 Bad Request` | `id` ei ole korrektne UUID |
 | `404 Not Found` | sellise id-ga sündmust pole |
 
+### `POST /api/events`
+
+Loob uue sündmuse.
+
+```http
+POST /api/events
+Content-Type: application/json
+
+{
+  "title": "Frontend meetup",
+  "description": "Pitsa ja Angular",
+  "startsAt": "2027-05-01T15:00:00Z",
+  "venue": "Tehnopol, Tallinn",
+  "capacity": 80
+}
+```
+
+Vastus on `201 Created`, `Location: /api/events/{id}` päis ja loodud sündmus (sama kuju nagu `GET`).
+
+**Valideerimine** (`CreateEventRequest`, teated on eesti keeles, sest UI näitab neid otse):
+
+| väli | reegel | teade |
+|---|---|---|
+| `title` | kohustuslik, mitte tühi, ≤ 200 | „Pealkiri on kohustuslik“ |
+| `description` | valikuline, ≤ 2000 | „Kirjeldus võib olla kuni 2000 märki“ |
+| `startsAt` | kohustuslik, tulevikus | „Algusaeg on kohustuslik“ / „Algusaeg peab olema tulevikus“ |
+| `venue` | kohustuslik, mitte tühi, ≤ 200 | „Toimumiskoht on kohustuslik“ |
+| `capacity` | kohustuslik, 1…100 000 | „Kohtade arv on kohustuslik“ / „Kohtade arv peab olema vähemalt 1“ |
+
+`title`, `venue` ja `description` trimmitakse ning tühi kirjeldus salvestatakse `null`'ina.
+
+| staatus | millal |
+|---|---|
+| `201 Created` | sündmus loodud |
+| `400 Bad Request` | valideerimisviga (`errors` väljaga) või vigane JSON |
+
 ## Vigade käsitlus
 
 Kõik vead tagastatakse ühtses **RFC 9457 Problem Details** formaadis
@@ -253,7 +290,7 @@ käituksid täpselt nagu päris andmebaas (samad migratsioonid, samad piirangud)
 | test | tüüp | mida kontrollib |
 |---|---|---|
 | `EventhubApplicationTests` | Spring kontekst + Postgres | rakendus käivitub, migratsioonid ja entity'd klapivad |
-| `event/EventControllerTest` | `@SpringBootTest` + `MockMvcTester` + Postgres | nimekiri ja sorteering, üks sündmus, 404, 400, avatud ligipääs |
+| `event/EventControllerTest` | `@SpringBootTest` + `MockMvcTester` + Postgres | nimekiri ja sorteering, üks sündmus, loomine (201 + `Location`), valideerimisvead, 404, 400 |
 | `common/GlobalExceptionHandlerTest` | standalone `MockMvcTester` (ilma Springi kontekstita) | 404, valideerimise 400 koos `errors`'iga, 500 ei leki detaile |
 
 Testides kasutatakse AssertJ-d ja `MockMvcTester`'it.
