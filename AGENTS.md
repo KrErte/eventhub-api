@@ -1,0 +1,12 @@
+# EventHub API
+- Java 25, Spring Boot 4.2, Gradle, PostgreSQL 18, Flyway
+- Paketid feature'i järgi: event/, booking/, common/ (mitte controller/service/repository)
+- DTO-d on recordid. Lombokit ei kasutata.
+- Ainult constructor injection. @Autowired väljal on keelatud (v.a testides).
+- Entity'sid ei tagastata kunagi API-st, ainult DTO-sid.
+- Vead tulevad ProblemDetail'ina ühest @RestControllerAdvice'ist.
+- Iga package-info.java sisaldab @NullMarked (JSpecify).
+- DB muudatused tehakse ainult uue Flyway migratsiooniga. Olemasolevaid migratsioone ei muudeta.
+- spring.jpa.open-in-view=false, ddl-auto=validate
+- Testides Testcontainers + @ServiceConnection, mitte H2. AssertJ, MockMvcTester.
+- Commitid: Conventional Commits.
