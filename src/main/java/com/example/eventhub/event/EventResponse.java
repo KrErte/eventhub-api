@@ -11,7 +11,8 @@ public record EventResponse(
         @Nullable String description,
         Instant startsAt,
         String venue,
-        int capacity) {
+        int capacity,
+        int availableSeats) {
 
     static EventResponse from(Event event) {
         return new EventResponse(
@@ -20,6 +21,7 @@ public record EventResponse(
                 event.getDescription(),
                 event.getStartsAt(),
                 event.getVenue(),
-                event.getCapacity());
+                event.getCapacity(),
+                event.getAvailableSeats());
     }
 }

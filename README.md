@@ -4,8 +4,8 @@ EventHub on sündmuste haldamise rakendus: sündmuste nimekiri, hiljem ka sündm
 See repo sisaldab **backendi** (REST API). Kasutajaliides on eraldi repos:
 [Eventhub-frontend](https://github.com/KrErte/Eventhub-frontend).
 
-**Praegune seis:** API oskab sündmusi lugeda (`GET /api/events`, `GET /api/events/{id}`) ja luua
-(`POST /api/events`). Broneerimine ja autentimine on veel tegemata.
+**Praegune seis:** sündmuste lugemine ja loomine ning kohtade broneerimine. Broneeringute vaatamine,
+tühistamine ja autentimine on veel tegemata.
 
 ## Sisukord
 
@@ -80,7 +80,8 @@ com.example.eventhub
 ├── EventhubApplication.java
 ├── common/                     ← ühine infrastruktuur
 │   ├── GlobalExceptionHandler  ← kõik vead → ProblemDetail
-│   ├── NotFoundException
+│   ├── NotFoundException       ← 404
+│   ├── ConflictException       ← 409
 │   └── SecurityConfig
 └── event/                      ← sündmuste feature
     ├── Event                   ← JPA entity        (package-private)
@@ -89,9 +90,17 @@ com.example.eventhub
     ├── EventResponse           ← DTO (record), mida API tagastab
     ├── CreateEventRequest      ← DTO (record), loomise päringu keha + valideerimine
     └── EventController         ← REST endpointid
+└── booking/                    ← broneeringute feature
+    ├── Booking                 ← JPA entity        (package-private)
+    ├── BookingRepository       ← Spring Data repo  (package-private)
+    ├── BookingService          ← broneerimise loogika
+    ├── CreateBookingRequest / BookingResponse
+    └── BookingController
 ```
 
-Tulevikus lisandub samamoodi `booking/`.
+**Feature'ite vaheline sõltuvus** on ühesuunaline: `booking` kasutab `EventService.reserveSeats()`,
+`event` ei tea `booking`'ust midagi. `Booking` viitab sündmusele ainult id kaudu (`eventId`), mitte
+JPA seosega, sest `Event` entity on `event` paketi sisemine.
 
 **Miks nii?** Kõik ühe funktsionaalsusega seotud failid on koos ja Java nähtavusreeglid hoiavad
 feature'ite piire: `Event` ja `EventRepository` on package-private, nii et teised paketid
@@ -138,8 +147,24 @@ Kutsed liiguvad ainult allapoole. Controller ei näe kunagi entity't.
 | `startsAt` | ajahetk (`Instant`) | kohustuslik, salvestatakse `timestamptz`'na (UTC) |
 | `venue` | tekst | kohustuslik, kuni 200 märki |
 | `capacity` | täisarv | kohustuslik, `> 0` (andmebaasi CHECK) |
+| `bookedSeats` | täisarv | broneeritud kohad. Muudetakse ainult `reserveSeats()` kaudu, CHECK `≤ capacity` |
 
-Sündmused tagastatakse alati **alguse aja järgi kasvavas järjekorras**.
+API tagastab `availableSeats = capacity − bookedSeats`. Sündmused tagastatakse alati **alguse aja järgi
+kasvavas järjekorras**.
+
+### Booking (broneering)
+
+| väli | tüüp | reeglid |
+|---|---|---|
+| `id` | UUID | genereeritakse |
+| `eventId` | UUID | sündmus (FK, `ON DELETE CASCADE`) |
+| `name` | tekst | kohustuslik, ≤ 200 |
+| `email` | tekst | kohustuslik, korrektne e-post. Salvestatakse trimmitult ja väiketähtedega |
+| `seats` | täisarv | 1–10 |
+| `createdAt` | ajahetk | broneerimise aeg |
+
+Ühe sündmuse kohta saab ühe e-postiga broneerida **ainult korra** (suur- ja väiketähti ei eristata,
+unikaalne indeks `uq_booking_event_email`).
 
 ## API
 
@@ -169,6 +194,8 @@ GET /api/events
 | staatus | millal |
 |---|---|
 | `200 OK` | alati (tühi andmebaas → `[]`) |
+
+Iga sündmuse objektil on ka `"availableSeats": 1500`.
 
 ### `GET /api/events/{id}`
 
@@ -216,6 +243,62 @@ Vastus on `201 Created`, `Location: /api/events/{id}` päis ja loodud sündmus (
 | `201 Created` | sündmus loodud |
 | `400 Bad Request` | valideerimisviga (`errors` väljaga) või vigane JSON |
 
+### `POST /api/events/{id}/bookings`
+
+Broneerib sündmusele kohti.
+
+```http
+POST /api/events/0193f6a0-0000-7000-8000-000000000002/bookings
+Content-Type: application/json
+
+{ "name": "Mari Maasikas", "email": "mari@example.com", "seats": 2 }
+```
+
+```json
+{
+  "id": "…",
+  "eventId": "0193f6a0-0000-7000-8000-000000000002",
+  "name": "Mari Maasikas",
+  "email": "mari@example.com",
+  "seats": 2,
+  "createdAt": "2026-11-24T10:54:26Z"
+}
+```
+
+| staatus | millal | vastuse näide |
+|---|---|---|
+| `201 Created` | broneering tehtud | |
+| `400 Bad Request` | valideerimisviga | `"errors": {"seats": "Korraga saab broneerida kuni 10 kohta"}` |
+| `404 Not Found` | sündmust pole | |
+| `409 Conflict` | kohti pole piisavalt | `"detail": "Vabu kohti pole piisavalt (alles 1)", "availableSeats": 1` |
+| `409 Conflict` | sündmus on alanud | `"detail": "Sündmus on juba alanud, broneerida ei saa"` |
+| `409 Conflict` | e-post juba broneerinud | `"errors": {"email": "Selle e-postiga on sellele sündmusele juba broneeritud"}` |
+
+### Kuidas ülebroneerimine on välistatud
+
+Kaks samaaegset päringut ei tohi mõlemad viimast kohta saada. Seetõttu ei loeta vabade kohtade arvu
+eraldi ja kirjutata seejärel, vaid **kontroll ja suurendamine on üks SQL-lause**
+(`EventRepository.reserveSeats`):
+
+```sql
+UPDATE event SET booked_seats = booked_seats + :seats
+WHERE id = :id AND starts_at > :now AND booked_seats + :seats <= capacity
+```
+
+- Postgres lukustab rea lause ajaks. Teine samaaegne päring ootab ja näeb juba uuendatud arvu.
+- Kui muudetud ridu on 0, otsitakse põhjus (pole olemas → 404, alanud või kohti pole → 409).
+- `BookingService.create()` on üks `@Transactional`: kohtade reserveerimine, e-posti kontroll ja
+  broneeringu salvestamine õnnestuvad koos või võetakse kõik tagasi. Näiteks korduva e-posti puhul
+  vabanevad reserveeritud kohad uuesti.
+- `EventService.reserveSeats()` on `Propagation.MANDATORY`: seda ei saa kutsuda väljaspool
+  transaktsiooni, kus reserveering jääks ilma broneeringuta.
+- Rea lukk kestab kuni commit'ini, seega sama sündmuse broneeringud käivad järjest ja e-posti kontroll
+  ei saa samaaegselt mööda minna. Unikaalne indeks on lisakaitse.
+- Varuks on andmebaasi `CHECK (booked_seats <= capacity)`.
+
+`BookingConcurrencyTest` kontrollib seda: 10 samaaegset broneeringut 1-kohalisele sündmusele →
+täpselt 1 õnnestub. 10 samaaegset broneeringut sama e-postiga → 1 õnnestub ja broneeritud kohti on 1.
+
 ## Vigade käsitlus
 
 Kõik vead tagastatakse ühtses **RFC 9457 Problem Details** formaadis
@@ -225,6 +308,7 @@ Kõik vead tagastatakse ühtses **RFC 9457 Problem Details** formaadis
 | olukord | staatus | näide |
 |---|---|---|
 | ressurssi pole (`NotFoundException`) | 404 | `{"title":"Not Found","status":404,"detail":"Event 0000… not found"}` |
+| konflikt olekuga (`ConflictException`) | 409 | `{"title":"Conflict","status":409,"detail":"Vabu kohti pole enam","availableSeats":0}` |
 | vigane parameeter (nt mitte-UUID) | 400 | `{"title":"Bad Request","status":400,"detail":"Failed to convert 'id' with value: 'abc'"}` |
 | päringu keha valideerimine (`@Valid`) | 400 | `{"title":"Bad Request","status":400,"detail":"Request validation failed","errors":{"name":"must not be blank"}}` |
 | ootamatu viga | 500 | `{"title":"Internal Server Error","status":500,"detail":"Unexpected error"}` |
@@ -247,6 +331,7 @@ Skeem on täielikult Flyway käes: `src/main/resources/db/migration/`.
 | fail | sisu |
 |---|---|
 | `V1__create_event.sql` | tabel `event` + indeks `starts_at` peal |
+| `V2__create_booking.sql` | `event.booked_seats` + CHECK, tabel `booking`, unikaalne `(event_id, lower(email))` |
 
 **Reegel:** olemasolevaid migratsioone ei muudeta kunagi. Iga muudatus on uus fail
 (`V2__...sql`, `V3__...sql`). Muidu läheb Flyway kontrollsumma olemasolevates andmebaasides katki.
@@ -291,6 +376,8 @@ käituksid täpselt nagu päris andmebaas (samad migratsioonid, samad piirangud)
 |---|---|---|
 | `EventhubApplicationTests` | Spring kontekst + Postgres | rakendus käivitub, migratsioonid ja entity'd klapivad |
 | `event/EventControllerTest` | `@SpringBootTest` + `MockMvcTester` + Postgres | nimekiri ja sorteering, üks sündmus, loomine (201 + `Location`), valideerimisvead, 404, 400 |
+| `booking/BookingControllerTest` | `@SpringBootTest` + `MockMvcTester` + Postgres | broneering ja vabad kohad, 409 kohti pole / alanud / sama e-post, 404, valideerimine |
+| `booking/BookingConcurrencyTest` | `@SpringBootTest` + Postgres, 10 lõime | viimast kohta ei müüda kaks korda, sama e-post ainult korra |
 | `common/GlobalExceptionHandlerTest` | standalone `MockMvcTester` (ilma Springi kontekstita) | 404, valideerimise 400 koos `errors`'iga, 500 ei leki detaile |
 
 Testides kasutatakse AssertJ-d ja `MockMvcTester`'it.

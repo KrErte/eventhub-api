@@ -33,6 +33,10 @@ class Event {
     @Column(nullable = false)
     private int capacity;
 
+    /** Changed only by {@link EventRepository#reserveSeats}, never through the entity. */
+    @Column(nullable = false, updatable = false)
+    private int bookedSeats;
+
     Event(String title, @Nullable String description, Instant startsAt, String venue, int capacity) {
         this.title = title;
         this.description = description;
@@ -70,5 +74,9 @@ class Event {
 
     int getCapacity() {
         return capacity;
+    }
+
+    int getAvailableSeats() {
+        return capacity - bookedSeats;
     }
 }
